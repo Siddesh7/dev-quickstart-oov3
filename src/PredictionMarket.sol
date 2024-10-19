@@ -45,7 +45,7 @@ contract PredictionMarket is OptimisticOracleV3CallbackRecipientInterface {
     uint64 public constant assertionLiveness = 7200; // 2 hours.
     bytes32 public immutable defaultIdentifier; // Identifier used for all prediction markets.
     bytes public constant unresolvable = "Unresolvable"; // Name of the unresolvable outcome where payouts are split.
-
+   bytes32[] public allMarketIds;
     event MarketInitialized(
         bytes32 indexed marketId,
         string outcome1,
@@ -118,7 +118,7 @@ contract PredictionMarket is OptimisticOracleV3CallbackRecipientInterface {
             description: bytes(description)
         });
         if (reward > 0) currency.safeTransferFrom(msg.sender, address(this), reward); // Pull reward.
-
+allMarketIds.push(marketId);
         emit MarketInitialized(
             marketId,
             outcome1,
@@ -130,7 +130,15 @@ contract PredictionMarket is OptimisticOracleV3CallbackRecipientInterface {
             requiredBond
         );
     }
-
+  function getAllMarkets() public view returns (bytes32[] memory, Market[] memory) {
+        Market[] memory allMarkets = new Market[](allMarketIds.length);
+        
+        for (uint i = 0; i < allMarketIds.length; i++) {
+            allMarkets[i] = markets[allMarketIds[i]];
+        }
+        
+        return (allMarketIds, allMarkets);
+    }
     // Assert the market with any of 3 possible outcomes: names of outcome1, outcome2 or unresolvable.
     // Only one concurrent assertion per market is allowed.
     function assertMarket(bytes32 marketId, string memory assertedOutcome) public returns (bytes32 assertionId) {
