@@ -25,6 +25,7 @@ contract PredictionMarket is OptimisticOracleV3CallbackRecipientInterface {
         bytes description;
         uint256 outcome1Pool;
         uint256 outcome2Pool;
+        string imageString;
     }
 
     struct AssertedMarket {
@@ -39,9 +40,11 @@ contract PredictionMarket is OptimisticOracleV3CallbackRecipientInterface {
     FinderInterface public immutable finder;
     IERC20 public immutable currency;
     OptimisticOracleV3Interface public immutable oo;
-    uint64 public constant assertionLiveness = 7200; // 2 hours
+    uint64 public constant assertionLiveness = 86400;
     bytes32 public immutable defaultIdentifier;
     bytes public constant unresolvable = "Unresolvable";
+
+    mapping(address => uint256) public userBalances;
 
     uint256 public constant INITIAL_LIQUIDITY = 1e18; // 1 token of liquidity to start
     uint256 public constant FEE_PERCENTAGE = 3; // 0.3% fee
@@ -54,8 +57,10 @@ contract PredictionMarket is OptimisticOracleV3CallbackRecipientInterface {
         address outcome1Token,
         address outcome2Token,
         uint256 reward,
-        uint256 requiredBond
+        uint256 requiredBond,
+         string imageString 
     );
+     event UserDeposit(address indexed user, uint256 amount);
     event MarketAsserted(
         bytes32 indexed marketId,
         string assertedOutcome,
@@ -111,7 +116,8 @@ contract PredictionMarket is OptimisticOracleV3CallbackRecipientInterface {
         string memory outcome2,
         string memory description,
         uint256 reward,
-        uint256 requiredBond
+        uint256 requiredBond,
+        string memory imageString
     ) public returns (bytes32 marketId) {
         require(bytes(outcome1).length > 0, "Empty first outcome");
         require(bytes(outcome2).length > 0, "Empty second outcome");
@@ -152,7 +158,8 @@ contract PredictionMarket is OptimisticOracleV3CallbackRecipientInterface {
             outcome2: bytes(outcome2),
             description: bytes(description),
             outcome1Pool: INITIAL_LIQUIDITY,
-            outcome2Pool: INITIAL_LIQUIDITY
+            outcome2Pool: INITIAL_LIQUIDITY,
+             imageString: imageString
         });
 
         outcome1Token.mint(address(this), INITIAL_LIQUIDITY);
@@ -176,7 +183,8 @@ contract PredictionMarket is OptimisticOracleV3CallbackRecipientInterface {
             address(outcome1Token),
             address(outcome2Token),
             reward,
-            requiredBond
+            requiredBond,
+            imageString
         );
     }
 
@@ -195,44 +203,47 @@ contract PredictionMarket is OptimisticOracleV3CallbackRecipientInterface {
     }
 
     function assertMarket(
-        bytes32 marketId,
-        string memory assertedOutcome
-    ) public returns (bytes32 assertionId) {
-        Market storage market = markets[marketId];
-        require(
-            market.outcome1Token != ExpandedIERC20(address(0)),
-            "Market does not exist"
-        );
-        bytes32 assertedOutcomeId = keccak256(bytes(assertedOutcome));
-        require(
-            market.assertedOutcomeId == bytes32(0),
-            "Assertion active or resolved"
-        );
-        require(
-            assertedOutcomeId == keccak256(market.outcome1) ||
-                assertedOutcomeId == keccak256(market.outcome2) ||
-                assertedOutcomeId == keccak256(unresolvable),
-            "Invalid asserted outcome"
-        );
+            bytes32 marketId,
+            string memory assertedOutcome
+        ) public returns (bytes32 assertionId) {
+            Market storage market = markets[marketId];
+            require(
+                market.outcome1Token != ExpandedIERC20(address(0)),
+                "Market does not exist"
+            );
+            bytes32 assertedOutcomeId = keccak256(bytes(assertedOutcome));
+            require(
+                market.assertedOutcomeId == bytes32(0),
+                "Assertion active or resolved"
+            );
+            require(
+                assertedOutcomeId == keccak256(market.outcome1) ||
+                    assertedOutcomeId == keccak256(market.outcome2) ||
+                    assertedOutcomeId == keccak256(unresolvable),
+                "Invalid asserted outcome"
+            );
 
-        market.assertedOutcomeId = assertedOutcomeId;
-        uint256 minimumBond = oo.getMinimumBond(address(currency));
-        uint256 bond = market.requiredBond > minimumBond
-            ? market.requiredBond
-            : minimumBond;
-        bytes memory claim = _composeClaim(assertedOutcome, market.description);
+            market.assertedOutcomeId = assertedOutcomeId;
+            uint256 minimumBond = oo.getMinimumBond(address(currency));
+            uint256 bond = market.requiredBond > minimumBond
+                ? market.requiredBond
+                : minimumBond;
+            bytes memory claim = _composeClaim(assertedOutcome, market.description);
 
-        currency.safeTransferFrom(msg.sender, address(this), bond);
-        currency.safeApprove(address(oo), bond);
-        assertionId = _assertTruthWithDefaults(claim, bond);
+            require(userBalances[msg.sender] >= bond, "Insufficient balance");
+            userBalances[msg.sender] -= bond;
 
-        assertedMarkets[assertionId] = AssertedMarket({
-            asserter: msg.sender,
-            marketId: marketId
-        });
+            currency.safeApprove(address(oo), bond);
+            assertionId = _assertTruthWithDefaults(claim, bond);
 
-        emit MarketAsserted(marketId, assertedOutcome, assertionId);
-    }
+            assertedMarkets[assertionId] = AssertedMarket({
+                asserter: msg.sender,
+                marketId: marketId
+            });
+
+            emit MarketAsserted(marketId, assertedOutcome, assertionId);
+        }
+
 
     function assertionResolvedCallback(
         bytes32 assertionId,
@@ -255,7 +266,7 @@ contract PredictionMarket is OptimisticOracleV3CallbackRecipientInterface {
 
     function assertionDisputedCallback(bytes32 assertionId) public {}
 
-    function createOutcomeTokens(
+  function createOutcomeTokens(
         bytes32 marketId,
         uint256 tokensToCreate
     ) public {
@@ -264,8 +275,9 @@ contract PredictionMarket is OptimisticOracleV3CallbackRecipientInterface {
             market.outcome1Token != ExpandedIERC20(address(0)),
             "Market does not exist"
         );
+        require(userBalances[msg.sender] >= tokensToCreate, "Insufficient balance");
 
-        currency.safeTransferFrom(msg.sender, address(this), tokensToCreate);
+        userBalances[msg.sender] -= tokensToCreate;
 
         market.outcome1Token.mint(msg.sender, tokensToCreate);
         market.outcome2Token.mint(msg.sender, tokensToCreate);
@@ -325,7 +337,7 @@ contract PredictionMarket is OptimisticOracleV3CallbackRecipientInterface {
         );
     }
 
-    function buyOutcomeTokens(
+ function buyOutcomeTokens(
         bytes32 marketId,
         bool isOutcomeOne,
         uint256 maxCurrencySpent
@@ -336,6 +348,7 @@ contract PredictionMarket is OptimisticOracleV3CallbackRecipientInterface {
             "Market does not exist"
         );
         require(!market.resolved, "Market already resolved");
+        require(userBalances[msg.sender] >= maxCurrencySpent, "Insufficient balance");
 
         uint256 currencyIn = maxCurrencySpent;
         uint256 tokenPool = isOutcomeOne
@@ -352,7 +365,7 @@ contract PredictionMarket is OptimisticOracleV3CallbackRecipientInterface {
 
         require(tokensBought > 0, "Insufficient output amount");
 
-        currency.safeTransferFrom(msg.sender, address(this), currencyIn);
+        userBalances[msg.sender] -= currencyIn;
 
         if (isOutcomeOne) {
             market.outcome1Token.mint(msg.sender, tokensBought);
@@ -372,6 +385,12 @@ contract PredictionMarket is OptimisticOracleV3CallbackRecipientInterface {
         return tokensBought;
     }
 
+    function deposit(uint256 amount) public {
+        require(amount > 0, "Deposit amount must be greater than 0");
+        currency.safeTransferFrom(msg.sender, address(this), amount);
+        userBalances[msg.sender] += amount;
+        emit UserDeposit(msg.sender, amount);
+    }
     function _getCollateralWhitelist()
         internal
         view
